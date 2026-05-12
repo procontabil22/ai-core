@@ -1,0 +1,26 @@
+﻿$json = @'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "opencode-mem",
+    "@knikolov/opencode-plugin-simple-memory",
+    "@nosferatu500/textract"
+  ],
+  "mcp": {
+    "ai-core": {
+      "type": "local",
+      "command": "C:/Program Files/nodejs/node.exe",
+      "args": ["C:/Users/Administrador/dyad-apps/ai-core/src/mcp-server.js"],
+      "enabled": true
+    }
+  }
+}
+'@
+
+# Global
+$json | Set-Content "C:\Users\Administrador\AppData\Roaming\opencode\opencode.json" -Encoding UTF8
+
+# talktoexpress
+$json | Set-Content "C:\Users\Administrador\dyad-apps\talktoexpress\.opencode\opencode.json" -Encoding UTF8
+
+Write-Host "Configs atualizados."
