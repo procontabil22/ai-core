@@ -6,43 +6,35 @@ const LANGUAGE_RULES = `
 REGRAS OBRIGATÓRIAS:
 - Responda SEMPRE em português brasileiro (pt-BR)
 - Código-fonte, variáveis e nomes de frameworks permanecem em inglês
-- Comunicação técnica deve ser concisa e objetiva
+- Seja direto, objetivo e enterprise-level
+- Retorne SEMPRE o código completo, nunca truncado
 `
 
-// ═══════════════════════════════════════════════════════
-// MODELOS
-// ═══════════════════════════════════════════════════════
 const MODELS = {
   flash:   'deepseek/deepseek-v4-flash',
-  v3:      'deepseek/deepseek-chat-v3-0324',
-  r1:      'deepseek/deepseek-r1',
+  pro:     'deepseek/deepseek-v4-pro',
   minimax: 'minimax/minimax-m2',
-  sonnet:  'anthropic/claude-sonnet-4-5',
+  sonnet:  'anthropic/claude-sonnet-4-6',
+  vision:  'google/gemini-2.0-flash-exp:free',
+  context: 'google/gemini-2.5-flash-preview-05-20',
 }
 
-// ═══════════════════════════════════════════════════════
-// CLASSIFICADOR
-// ═══════════════════════════════════════════════════════
 function classifyTask(prompt) {
   const p = prompt.toLowerCase()
-  const isPremium = ['security','auth','jwt','autenticacao','autenticação','distributed','multi-tenant','payment','pagamento','middleware','prisma','critical','enterprise'].some(t => p.includes(t))
-  const isSimple  = ['fix','corrig','erro','error','bug','typo','rename','renomear','delete','remov','adiciona import','add import'].some(t => p.includes(t))
-  const isComplex = ['refactor','refatora','arquitetura','architecture','pipeline','módulo','module','implement','implemente','integra','criar','create'].some(t => p.includes(t))
+  const isPremium = ['security','auth','jwt','autenticacao','autenticação','distributed','multi-tenant','payment','pagamento','middleware','prisma','critical','enterprise','permission','rbac'].some(t => p.includes(t))
+  const isSimple  = ['fix','corrig','erro','error','bug','typo','rename','renomear','delete','remov','adiciona import','add import','linha','variavel','variable'].some(t => p.includes(t))
+  const isComplex = ['refactor','refatora','arquitetura','architecture','pipeline','módulo','module','implement','implemente','integra','criar','create','componente','component','page','página','funcionalidade','feature'].some(t => p.includes(t))
   if (isPremium) return 'premium'
   if (isSimple && !isComplex) return 'simple'
   return 'complex'
 }
 
 function hasImage(prompt, imageBase64) {
-  return !!imageBase64 || prompt.includes('[Image') || prompt.includes('imagem') || prompt.includes('screenshot') || prompt.includes('print')
+  return !!imageBase64 || prompt.includes('[Image') || prompt.includes('imagem') || prompt.includes('screenshot') || prompt.includes('print') || prompt.includes('tela')
 }
 
-// ═══════════════════════════════════════════════════════
-// CHAMADA COM RETRY E FALLBACK
-// ═══════════════════════════════════════════════════════
 async function callModel(model, prompt, label = '', imageBase64 = null, fallback = null) {
   const start = Date.now()
-
   const buildMessages = (content) => {
     if (imageBase64) {
       return [{ role: 'user', content: [
@@ -52,16 +44,14 @@ async function callModel(model, prompt, label = '', imageBase64 = null, fallback
     }
     return [{ role: 'user', content }]
   }
-
   const modelsToTry = [model, fallback].filter(Boolean)
-
   for (const currentModel of modelsToTry) {
     if (currentModel !== model) console.log(`[${label}] FALLBACK → ${currentModel}`)
     try {
       const res = await axios.post(
         'https://openrouter.ai/api/v1/chat/completions',
         { model: currentModel, messages: buildMessages(prompt) },
-        { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 90000 }
+        { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 120000 }
       )
       const content = res.data.choices[0].message.content
       const modelUsed = res.data.model
@@ -77,48 +67,102 @@ async function callModel(model, prompt, label = '', imageBase64 = null, fallback
 }
 
 // ═══════════════════════════════════════════════════════
-// VISÃO — DeepSeek V4 Flash → fallback VPS
+// STAGE 0 — GEMINI FLASH: EXTRAÇÃO INTELIGENTE DE CONTEXTO
+// Lê o repositório completo e extrai APENAS o que é
+// relevante para a tarefa. Contexto cirúrgico.
 // ═══════════════════════════════════════════════════════
-async function analyzeImage(imageBase64) {
-  console.log('[VISION] DeepSeek V4 Flash analisando imagem...')
+async function extractSmartContext(prompt, fullContext, complexity) {
+  console.log('[CONTEXT] Gemini Flash extraindo contexto relevante...')
+  const start = Date.now()
+
+  const maxContext = {
+    simple:  3000,
+    complex: 6000,
+    premium: 10000,
+  }[complexity]
+
   try {
     const res = await callModel(
-      MODELS.flash,
-      `${LANGUAGE_RULES}
-Analise esta imagem detalhadamente. Extraia:
-1. Tipo de conteúdo (UI, código, documento, erro)
-2. Texto visível completo
-3. Componentes e elementos identificados
-4. Problemas ou pontos de atenção
-Responda em pt-BR.`,
-      'VISION-FLASH',
-      imageBase64
+      MODELS.context,
+      `Você é um especialista em análise de código. Analise o contexto do repositório abaixo e extraia APENAS as partes relevantes para a tarefa solicitada.
+
+TAREFA: ${prompt}
+
+CONTEXTO COMPLETO DO REPOSITÓRIO:
+${fullContext}
+
+INSTRUÇÕES:
+- Extraia apenas arquivos, funções, tipos e padrões diretamente relacionados à tarefa
+- Ignore código não relacionado
+- Mantenha imports relevantes
+- Preserve padrões de nomenclatura e arquitetura usados no projeto
+- Limite a resposta a ${maxContext} caracteres
+- Se a tarefa for simples, seja mais conciso
+- Se for complexa, inclua mais contexto arquitetural
+
+Retorne apenas o contexto extraído, sem explicações.`,
+      'CONTEXT-GEMINI-FLASH'
     )
+
+    const duration = Date.now() - start
+    console.log(`[CONTEXT] Contexto original: ${fullContext.length} chars → Extraído: ${res.content.length} chars (${Math.round(res.content.length/fullContext.length*100)}%) em ${duration}ms`)
     return res.content
+
   } catch (err) {
-    console.warn('[VISION] DeepSeek falhou — usando VPS minicpm-v (gratuito)')
-    const vpsRes = await axios.post(VISION_URL, { mime: 'image/png', content: imageBase64 }, { timeout: 120000 })
-    return `${vpsRes.data.summary}\n\nOCR:\n${vpsRes.data.ocr}`
+    console.warn(`[CONTEXT] Gemini falhou — usando contexto bruto limitado: ${err.message}`)
+    return fullContext.slice(0, maxContext)
   }
 }
 
 // ═══════════════════════════════════════════════════════
-// ROTA SIMPLES — DeepSeek V4 Flash direto
+// VISÃO — Gemini Flash FREE (apenas leitura de imagem)
 // ═══════════════════════════════════════════════════════
-async function routeSimple(prompt, context) {
+async function analyzeImage(imageBase64) {
+  console.log('[VISION] Gemini Flash — interpretando imagem...')
+  try {
+    const res = await callModel(
+      MODELS.vision,
+      `Analise esta imagem de interface/sistema e extraia:
+1. Tipo: (UI, erro, formulário, grid, dashboard, código)
+2. Texto visível completo (labels, mensagens, valores, botões)
+3. Componentes identificados (tabelas, filtros, modais, inputs)
+4. Problemas visíveis (erros, campos vazios, dados incorretos)
+5. Contexto técnico (nome de rotas, variáveis, IDs visíveis)
+Retorne em formato estruturado para uso como contexto de implementação.`,
+      'VISION-GEMINI-FLASH',
+      imageBase64
+    )
+    return res.content
+  } catch (err) {
+    console.warn('[VISION] Gemini falhou — usando VPS minicpm-v')
+    try {
+      const vpsRes = await axios.post(VISION_URL, { mime: 'image/png', content: imageBase64 }, { timeout: 120000 })
+      return `${vpsRes.data.summary}\n\nOCR:\n${vpsRes.data.ocr}`
+    } catch (vpsErr) {
+      console.warn('[VISION] VPS também falhou:', vpsErr.message)
+      return ''
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ROTA SIMPLES — Flash direto com contexto enxuto
+// ═══════════════════════════════════════════════════════
+async function routeSimple(prompt, smartContext) {
   console.log('\n[ROUTER] ▶ SIMPLES — DeepSeek V4 Flash')
   const t = Date.now()
   const result = await callModel(
     MODELS.flash,
     `${LANGUAGE_RULES}
-CONTEXTO DO REPOSITÓRIO:
-${context}
+
+CONTEXTO RELEVANTE DO REPOSITÓRIO:
+${smartContext}
 
 TAREFA:
 ${prompt}
 
-Resolva de forma direta e objetiva.`,
-    'SIMPLE'
+Resolva de forma direta. Retorne o código completo corrigido com explicação objetiva.`,
+    'SIMPLE-FLASH'
   )
   return {
     finalContent: result.content,
@@ -131,53 +175,67 @@ Resolva de forma direta e objetiva.`,
 }
 
 // ═══════════════════════════════════════════════════════
-// ROTA COMPLEXA — V4 Flash → V4 Flash → Minimax → DeepSeek V3
+// ROTA COMPLEXA — contexto cirúrgico em cada estágio
 // ═══════════════════════════════════════════════════════
-async function routeComplex(prompt, context, visionContext = '') {
-  console.log('\n[ROUTER] ▶ COMPLEXA — Flash→Flash→Minimax→V3')
+async function routeComplex(prompt, smartContext, visionContext = '') {
+  console.log('\n[ROUTER] ▶ COMPLEXA — Flash→Pro→Minimax→Pro')
   const timings = {}
   const models = {}
-  const enriched = visionContext ? `${prompt}\n\nCONTEXTO VISUAL:\n${visionContext}` : prompt
+  const enriched = visionContext
+    ? `${prompt}\n\n=== CONTEXTO VISUAL DA IMAGEM ===\n${visionContext}`
+    : prompt
 
-  // Stage 1 — V4 Flash planeja
+  // Stage 1 — Flash planeja
   const t1 = Date.now()
-  const plan = await callModel(MODELS.flash,
+  const plan = await callModel(
+    MODELS.flash,
     `${LANGUAGE_RULES}
-CONTEXTO DO REPOSITÓRIO:
-${context}
+
+CONTEXTO RELEVANTE DO REPOSITÓRIO:
+${smartContext}
 
 TAREFA:
 ${enriched}
 
-Crie um plano de implementação detalhado com etapas claras. NÃO implemente — apenas planeje.`,
+Crie um plano de implementação detalhado:
+- Liste os arquivos a modificar com caminho completo
+- Descreva as alterações em cada arquivo
+- Identifique dependências e riscos
+NÃO escreva código ainda — apenas planeje.`,
     'PLAN-FLASH'
   )
   timings.plan_ms = Date.now() - t1
   models.planner = plan.modelUsed
 
-  // Stage 2 — V4 Flash implementa
+  // Stage 2 — Pro implementa
   const t2 = Date.now()
-  const impl = await callModel(MODELS.flash,
+  const impl = await callModel(
+    MODELS.pro,
     `${LANGUAGE_RULES}
-PLANO:
+
+PLANO DE IMPLEMENTAÇÃO:
 ${plan.content}
 
-CONTEXTO DO REPOSITÓRIO (resumo):
-${context.slice(0, 4000)}
+CONTEXTO RELEVANTE DO REPOSITÓRIO:
+${smartContext}
 
-Execute o plano gerando o código completo e funcional.`,
-    'IMPL-FLASH'
+Execute o plano. Gere código completo, tipado e production-ready.
+Inclua todos os imports, tipos TypeScript e tratamento de erros.`,
+    'IMPL-PRO'
   )
   timings.impl_ms = Date.now() - t2
   models.implementer = impl.modelUsed
 
   // Stage 3 — Minimax comprime
   const t3 = Date.now()
-  const compressed = await callModel(MODELS.minimax,
+  const compressed = await callModel(
+    MODELS.minimax,
     `${LANGUAGE_RULES}
-Comprima e organize esta implementação mantendo toda a lógica essencial.
-Elimine redundâncias, organize o código de forma limpa.
-Mantenha imports, tipos TypeScript e lógica de negócio.
+
+Organize e comprima esta implementação:
+- Elimine redundâncias mantendo toda a lógica
+- Estruture de forma limpa e legível
+- Preserve imports, tipos e lógica de negócio
 
 IMPLEMENTAÇÃO:
 ${impl.content}`,
@@ -186,17 +244,23 @@ ${impl.content}`,
   timings.compress_ms = Date.now() - t3
   models.compressor = compressed.modelUsed
 
-  // Stage 4 — DeepSeek V3 revisa
+  // Stage 4 — Pro revisa
   const t4 = Date.now()
-  const reviewed = await callModel(MODELS.v3,
+  const reviewed = await callModel(
+    MODELS.pro,
     `${LANGUAGE_RULES}
-Revise esta implementação:
 
-${compressed.content}
+Revise esta implementação criticamente:
+- Verifique erros TypeScript e bugs lógicos
+- Confira edge cases e tratamento de erros
+- Valide que atende à tarefa: "${prompt.slice(0, 200)}"
+- Se encontrar problemas, corrija-os
 
-Verifique: bugs, TypeScript errors, edge cases, lógica de negócio.
-Corrija problemas encontrados e retorne a versão final pronta para uso.`,
-    'REVIEW-V3'
+Retorne a versão FINAL completa e production-ready.
+
+IMPLEMENTAÇÃO:
+${compressed.content}`,
+    'REVIEW-PRO'
   )
   timings.review_ms = Date.now() - t4
   models.reviewer = reviewed.modelUsed
@@ -206,80 +270,89 @@ Corrija problemas encontrados e retorne a versão final pronta para uso.`,
 }
 
 // ═══════════════════════════════════════════════════════
-// ROTA PREMIUM — +DeepSeek R1 → fallback Claude Sonnet
+// ROTA PREMIUM — contexto completo + Sonnet
 // ═══════════════════════════════════════════════════════
-async function routePremium(prompt, context, visionContext = '') {
-  console.log('\n[ROUTER] ▶ PREMIUM — Flash→Flash→Minimax→V3→R1 (fallback: Sonnet)')
-
-  const complex = await routeComplex(prompt, context, visionContext)
-
-  // Stage 5 — DeepSeek R1 enterprise (fallback: Claude Sonnet)
+async function routePremium(prompt, smartContext, visionContext = '') {
+  console.log('\n[ROUTER] ▶ PREMIUM — Flash→Pro→Minimax→Pro→Sonnet4.6')
+  const complex = await routeComplex(prompt, smartContext, visionContext)
   const t5 = Date.now()
-  const enterprise = await callModel(
-    MODELS.r1,
+  const premium = await callModel(
+    MODELS.sonnet,
     `${LANGUAGE_RULES}
-Faça uma revisão enterprise desta implementação:
 
+Faça revisão enterprise desta implementação:
+
+TAREFA ORIGINAL: ${prompt.slice(0, 300)}
+
+IMPLEMENTAÇÃO:
 ${complex.finalContent}
 
-Foque em: segurança, autenticação, multi-tenant, race conditions, escalabilidade.
+Foque em: segurança, autenticação, multi-tenancy, race conditions, validações, padrões enterprise.
 Retorne a versão final refinada e production-ready.`,
-    'ENTERPRISE-R1',
+    'PREMIUM-SONNET-4.6',
     null,
-    MODELS.sonnet  // fallback
+    MODELS.sonnet
   )
-
   return {
-    finalContent: enterprise.content,
+    finalContent: premium.content,
     route: 'premium',
     premiumActivated: true,
-    models: { ...complex.models, enterprise: enterprise.modelUsed },
-    timings: { ...complex.timings, enterprise_ms: Date.now() - t5 },
+    models: { ...complex.models, premium: premium.modelUsed },
+    timings: { ...complex.timings, premium_ms: Date.now() - t5 },
     totalMs: complex.totalMs + (Date.now() - t5),
   }
 }
 
 // ═══════════════════════════════════════════════════════
-// ORQUESTRADOR PRINCIPAL
+// ORQUESTRADOR PRINCIPAL v6.0
 // ═══════════════════════════════════════════════════════
 async function runPipeline(prompt, context, imageBase64 = null) {
   const totalStart = Date.now()
 
-  console.log('\n╔══════════════════════════════════════════╗')
-  console.log('║      AI-CORE ORQUESTRADOR v4.0           ║')
-  console.log('║  Flash Vision→Classifier→Route→Output    ║')
-  console.log('╚══════════════════════════════════════════╝')
+  console.log('\n╔══════════════════════════════════════════════════╗')
+  console.log('║   AI-CORE ORQUESTRADOR v6.0                      ║')
+  console.log('║   Gemini(context) → Flash(plan) → Pro(impl)      ║')
+  console.log('║   → Minimax(compress) → Pro(review)              ║')
+  console.log('╚══════════════════════════════════════════════════╝')
 
-  // 1. Visão
-  let visionContext = ''
-  if (hasImage(prompt, imageBase64) && imageBase64) {
-    visionContext = await analyzeImage(imageBase64)
-    console.log(`[VISION] Contexto extraído: ${visionContext.length} chars`)
-  }
-
-  // 2. Classifica
+  // 1. Classifica primeiro (antes de extrair contexto)
   const complexity = classifyTask(prompt)
   console.log(`[CLASSIFIER] Rota: ${complexity.toUpperCase()}`)
 
-  // 3. Roteia
+  // 2. Visão (se houver imagem)
+  let visionContext = ''
+  if (hasImage(prompt, imageBase64) && imageBase64) {
+    visionContext = await analyzeImage(imageBase64)
+    console.log(`[VISION] Contexto: ${visionContext.length} chars`)
+  }
+
+  // 3. Gemini extrai contexto cirúrgico baseado na tarefa e complexidade
+  const smartContext = await extractSmartContext(
+    visionContext ? `${prompt}\n\nCONTEXTO VISUAL:\n${visionContext}` : prompt,
+    context,
+    complexity
+  )
+
+  // 4. Roteia com contexto otimizado
   let result
+  const enrichedPrompt = visionContext
+    ? `${prompt}\n\n=== CONTEXTO VISUAL ===\n${visionContext}`
+    : prompt
+
   if (complexity === 'simple') {
-    result = await routeSimple(
-      prompt + (visionContext ? `\n\nCONTEXTO VISUAL:\n${visionContext}` : ''),
-      context
-    )
+    result = await routeSimple(enrichedPrompt, smartContext)
   } else if (complexity === 'premium') {
-    result = await routePremium(prompt, context, visionContext)
+    result = await routePremium(prompt, smartContext, visionContext)
   } else {
-    result = await routeComplex(prompt, context, visionContext)
+    result = await routeComplex(prompt, smartContext, visionContext)
   }
 
   result.totalMs = Date.now() - totalStart
   result.visionUsed = !!visionContext
+  result.contextReduction = `${fullContext ? Math.round(smartContext.length/context.length*100) : 100}%`
 
-  console.log(`\n[DONE] Rota: ${result.route} | Total: ${result.totalMs}ms | Premium: ${result.premiumActivated}`)
+  console.log(`\n[DONE] Rota: ${result.route} | Total: ${result.totalMs}ms | Contexto: ${smartContext.length} chars`)
   return result
 }
 
 module.exports = { runPipeline, isPremiumPrompt: (p) => classifyTask(p) === 'premium' }
-
