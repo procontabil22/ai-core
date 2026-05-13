@@ -45,6 +45,8 @@ app.post('/pipeline', async (req, res) => {
               total_ms: result.totalMs,
               route: result.route,
               answer: result.finalContent,
+              contextReduction: result.contextReduction,
+              route: result.route,
             }),
           },
         },
@@ -110,6 +112,8 @@ app.post('/pipeline/stream', async (req, res) => {
         timings: result.timings,
         total_ms: result.totalMs,
         answer: result.finalContent,
+              contextReduction: result.contextReduction,
+              route: result.route,
       },
     })
 
@@ -226,4 +230,5 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`  POST /debug/index`)
   console.log(`  GET  /health`)
 })
+
 

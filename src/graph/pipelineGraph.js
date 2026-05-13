@@ -349,10 +349,12 @@ async function runPipeline(prompt, context, imageBase64 = null) {
 
   result.totalMs = Date.now() - totalStart
   result.visionUsed = !!visionContext
-  result.contextReduction = `${fullContext ? Math.round(smartContext.length/context.length*100) : 100}%`
+  result.contextReduction = `${Math.round(smartContext.length/context.length*100)}%`
 
   console.log(`\n[DONE] Rota: ${result.route} | Total: ${result.totalMs}ms | Contexto: ${smartContext.length} chars`)
   return result
 }
 
 module.exports = { runPipeline, isPremiumPrompt: (p) => classifyTask(p) === 'premium' }
+
+
